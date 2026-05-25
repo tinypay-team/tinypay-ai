@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  services-api:
+    build: .
+    container_name: services-api
+    ports:
+      - "8001:8001"
+    environment:
+      - BASE_URL=http://15.164.179.132:8001
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GNEWS_API_KEY=${GNEWS_API_KEY:-}
+      - NEWSAPI_KEY=${NEWSAPI_KEY:-}
+    volumes:
+      - ./generated_files:/app/generated_files
+    networks:
+      - docker_default
+    restart: unless-stopped
+
+networks:
+  docker_default:
+    external: true
