@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from typing import Optional, List, Any
+from pydantic import BaseModel, field_validator, model_validator
+from typing import Optional, List, Any, Union
 import os, uuid, logging
 
 from services.crypto import execute_crypto_service
@@ -48,6 +48,14 @@ class ExecuteRequest(BaseModel):
     context: Optional[str] = ""
     payment_result: PaymentResult
     approved_services: List[ServiceItem]
+
+    @field_validator("approved_services", mode="before")
+    @classmethod
+    def normalize_approved_services(cls, v):
+        """Dify가 배열을 {"0": {...}, "1": {...}} dict로 전달하는 경우 처리"""
+        if isinstance(v, dict):
+            return list(v.values())
+        return v
 
 
 AVAILABLE_SERVICES = [
@@ -156,6 +164,14 @@ class FileGenerateRequest(BaseModel):
     user_id: Optional[int] = None
     chat_room_id: Optional[int] = None
     approved_services: Optional[List[ServiceItem]] = None
+
+    @field_validator("approved_services", mode="before")
+    @classmethod
+    def normalize_approved_services(cls, v):
+        """Dify가 배열을 {"0": {...}, "1": {...}} dict로 전달하는 경우 처리"""
+        if isinstance(v, dict):
+            return list(v.values())
+        return v
 
 
 @app.post("/api/files/generate")
