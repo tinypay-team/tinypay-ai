@@ -41,13 +41,21 @@ class PaymentResult(BaseModel):
 
 
 class ExecuteRequest(BaseModel):
-    user_id: int
-    chat_room_id: int
+    user_id: Union[int, str]
+    chat_room_id: Union[int, str]
     session_id: Optional[str] = None
     original_prompt: str
     context: Optional[str] = ""
     payment_result: PaymentResult
     approved_services: List[ServiceItem]
+
+    @field_validator("user_id", "chat_room_id", mode="before")
+    @classmethod
+    def convert_to_int(cls, v):
+        """문자열을 정수로 변환"""
+        if isinstance(v, str):
+            return int(v)
+        return v
 
     @field_validator("approved_services", mode="before")
     @classmethod
