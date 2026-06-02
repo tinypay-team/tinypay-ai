@@ -1,0 +1,10 @@
+# 환경변수 (API 키 포함 - 절대 깃에 올리면 안 됨)
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 생성된 파일
+generated_files/
