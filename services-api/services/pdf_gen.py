@@ -1,7 +1,9 @@
 import os
 import uuid
 import html
+import json
 from datetime import datetime, timedelta
+from typing import Any
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -59,12 +61,7 @@ def _get_styles():
     return styles["h1"], styles["Normal"], styles["Normal"]
 
 
-def _to_paragraph_text(text: str) -> str:
-    """
-    일반 텍스트를 ReportLab Paragraph에서 안전하게 표시할 수 있게 변환.
-    - HTML escape 처리
-    - 줄바꿈을 <br/>로 변환
-    """
+def _to_paragraph_text(text: Any) -> str:
     if not text:
         return ""
 
@@ -72,10 +69,54 @@ def _to_paragraph_text(text: str) -> str:
     return escaped.replace("\n", "<br/>")
 
 
+def _extract_pdf_data(original_prompt: Any, context: str = "") -> tuple[str, str]:
+    """
+    original_prompt가 아래 어떤 형태여도 처리:
+    1. 일반 문자열
+    2. dict 객체
+    3. JSON 문자열
+    """
+
+    title = "Generated Document"
+
+    if isinstance(original_prompt, dict):
+        title = original_prompt.get("title") or title
+        content = (
+            original_prompt.get("content")
+            or original_prompt.get("description")
+            or context
+            or json.dumps(original_prompt, ensure_ascii=False, indent=2)
+        )
+        return title, content
+
+    if isinstance(original_prompt, str):
+        stripped = original_prompt.strip()
+
+        # JSON 문자열이면 dict로 파싱 시도
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, dict):
+                    title = parsed.get("title") or title
+                    content = (
+                        parsed.get("content")
+                        or parsed.get("description")
+                        or context
+                        or json.dumps(parsed, ensure_ascii=False, indent=2)
+                    )
+                    return title, content
+            except json.JSONDecodeError:
+                pass
+
+        return title, original_prompt or context or "생성할 문서 내용이 없습니다."
+
+    return title, context or "생성할 문서 내용이 없습니다."
+
+
 async def execute_pdf_generation(
     service_name: str,
     service_type: str,
-    original_prompt: str,
+    original_prompt: Any,
     context: str,
     base_url: str,
 ) -> dict:
@@ -95,13 +136,10 @@ async def execute_pdf_generation(
         bottomMargin=20 * mm,
     )
 
-    # 핵심:
-    # original_prompt에는 "PDF로 만들어줘" 같은 요청문이 아니라
-    # Dify의 '파일 내용 구조화 LLM' 결과, 즉 실제 문서 본문을 넣어야 함.
-    document_content = original_prompt or context or "생성할 문서 내용이 없습니다."
+    document_title, document_content = _extract_pdf_data(original_prompt, context)
 
     story = []
-    story.append(Paragraph("Generated Document", title_style))
+    story.append(Paragraph(_to_paragraph_text(document_title), title_style))
     story.append(Spacer(1, 6 * mm))
 
     story.append(Paragraph(_to_paragraph_text(document_content), body_style))
@@ -125,7 +163,7 @@ async def execute_pdf_generation(
         "file_url": file_url,
         "mime_type": "application/pdf",
         "expires_at": expires_at,
-        "description": f"PDF document generated for: {document_content[:80]}",
+        "description": f"PDF document generated for: {str(document_content)[:80]}",
     }
 
     return {

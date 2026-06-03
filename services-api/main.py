@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, field_validator
 from typing import Optional, List, Any, Union
-import os, uuid, logging
+import os
+import logging
 
 from services.crypto import execute_crypto_service
 from services.news import execute_news_service
@@ -15,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Services Execution API", version="1.0.0")
 
-# Serve generated files statically
 os.makedirs("/app/generated_files", exist_ok=True)
 app.mount("/files", StaticFiles(directory="/app/generated_files"), name="files")
 
@@ -44,7 +44,7 @@ class ExecuteRequest(BaseModel):
     user_id: Union[int, str]
     chat_room_id: Union[int, str]
     session_id: Optional[str] = None
-    original_prompt: str
+    original_prompt: Any
     context: Optional[str] = ""
     payment_result: PaymentResult
     approved_services: List[ServiceItem]
@@ -52,7 +52,6 @@ class ExecuteRequest(BaseModel):
     @field_validator("user_id", "chat_room_id", mode="before")
     @classmethod
     def convert_to_int(cls, v):
-        """문자열을 정수로 변환"""
         if isinstance(v, str):
             return int(v)
         return v
@@ -60,7 +59,6 @@ class ExecuteRequest(BaseModel):
     @field_validator("approved_services", mode="before")
     @classmethod
     def normalize_approved_services(cls, v):
-        """Dify가 배열을 {"0": {...}, "1": {...}} dict로 전달하는 경우 처리"""
         if isinstance(v, dict):
             return list(v.values())
         return v
@@ -117,7 +115,17 @@ SERVICE_HANDLERS = {
 
 @app.post("/api/services/execute")
 async def execute_services(request: ExecuteRequest):
-    logger.info(f"Executing {len(request.approved_services)} services for user {request.user_id}")
+    logger.info("========== REQUEST ==========")
+    logger.info(f"user_id={request.user_id}")
+    logger.info(f"chat_room_id={request.chat_room_id}")
+    logger.info(f"type(original_prompt)={type(request.original_prompt)}")
+    logger.info(f"original_prompt={request.original_prompt}")
+    logger.info(f"approved_services={request.approved_services}")
+    logger.info("=============================")
+
+    logger.info(
+        f"Executing {len(request.approved_services)} services for user {request.user_id}"
+    )
 
     service_results = []
     generated_files = []
@@ -125,7 +133,11 @@ async def execute_services(request: ExecuteRequest):
 
     for service in request.approved_services:
         try:
-            handler = SERVICE_HANDLERS.get(service.service_name, execute_generic_service)
+            handler = SERVICE_HANDLERS.get(
+                service.service_name,
+                execute_generic_service,
+            )
+
             result = await handler(
                 service_name=service.service_name,
                 service_type=service.service_type,
@@ -134,13 +146,15 @@ async def execute_services(request: ExecuteRequest):
                 base_url=BASE_URL,
             )
 
-            service_results.append({
-                "service_name": service.service_name,
-                "service_type": service.service_type,
-                "success": result.get("success", True),
-                "result": result.get("data"),
-                "error_message": result.get("error"),
-            })
+            service_results.append(
+                {
+                    "service_name": service.service_name,
+                    "service_type": service.service_type,
+                    "success": result.get("success", True),
+                    "result": result.get("data"),
+                    "error_message": result.get("error"),
+                }
+            )
 
             if result.get("file_info"):
                 generated_files.append(result["file_info"])
@@ -148,16 +162,15 @@ async def execute_services(request: ExecuteRequest):
 
         except Exception as e:
             logger.error(f"Service {service.service_name} failed: {e}")
-            service_results.append({
-                "service_name": service.service_name,
-                "service_type": service.service_type,
-                "success": False,
-                "result": None,
-                "error_message": str(e),
-            })
-
-    if not generated_files and final_output_type == "TEXT":
-        pass  # keep TEXT
+            service_results.append(
+                {
+                    "service_name": service.service_name,
+                    "service_type": service.service_type,
+                    "success": False,
+                    "result": None,
+                    "error_message": str(e),
+                }
+            )
 
     return {
         "success": True,
@@ -168,7 +181,7 @@ async def execute_services(request: ExecuteRequest):
 
 
 class FileGenerateRequest(BaseModel):
-    llm_output: str
+    llm_output: Any
     user_id: Optional[int] = None
     chat_room_id: Optional[int] = None
     approved_services: Optional[List[ServiceItem]] = None
@@ -176,7 +189,6 @@ class FileGenerateRequest(BaseModel):
     @field_validator("approved_services", mode="before")
     @classmethod
     def normalize_approved_services(cls, v):
-        """Dify가 배열을 {"0": {...}, "1": {...}} dict로 전달하는 경우 처리"""
         if isinstance(v, dict):
             return list(v.values())
         return v
@@ -184,8 +196,6 @@ class FileGenerateRequest(BaseModel):
 
 @app.post("/api/files/generate")
 async def generate_file(request: FileGenerateRequest):
-    """Generate a file (PDF/etc.) from LLM-processed output."""
-    # Determine output type from approved_services
     has_pdf = any(
         s.service_name in ("PDFGenerationService", "DocumentStructuringAgent")
         for s in (request.approved_services or [])
@@ -199,14 +209,15 @@ async def generate_file(request: FileGenerateRequest):
             context="",
             base_url=BASE_URL,
         )
+
         file_info = result.get("file_info")
+
         return {
             "success": True,
             "output_type": "FILE",
             "file_info": file_info,
         }
 
-    # Default: return as text (no file generated)
     return {
         "success": True,
         "output_type": "TEXT",
@@ -217,7 +228,6 @@ async def generate_file(request: FileGenerateRequest):
 
 @app.get("/api/services")
 def list_services():
-    """Return the list of available services for Dify workflow."""
     return AVAILABLE_SERVICES
 
 
