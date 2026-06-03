@@ -1,7 +1,10 @@
 import httpx
 import os
 import uuid
+import logging
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_IMAGE_URL = "https://api.openai.com/v1/images/generations"
@@ -28,6 +31,8 @@ async def execute_image_generation(service_name: str, service_type: str,
                 "response_format": "url",
             },
         )
+        if resp.status_code != 200:
+            logger.error(f"OpenAI error {resp.status_code}: {resp.json()}")
         resp.raise_for_status()
         data = resp.json()
 
