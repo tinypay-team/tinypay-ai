@@ -124,8 +124,22 @@ class _HtmlToFlowables(HTMLParser):
     _BLOCK_TAGS = {"h1", "h2", "h3", "p", "li", "div"}
     _VOID_TAGS  = {"br", "hr"}
 
+    # 내용을 무시할 태그 (CSS, JS, 메타 등)
+    _SKIP_CONTENT_TAGS = {"head", "style", "script"}
+    # 투명하게 통과시킬 태그 (html, body는 컨테이너만)
+    _PASS_TAGS = {"html", "body", "meta", "link", "title"}
+
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
+
+        # 내용 스킵 태그: 스택에 올려서 handle_data에서 무시
+        if tag in self._SKIP_CONTENT_TAGS:
+            self._tag_stack.append(tag)
+            return
+
+        # 투명 컨테이너 태그: 무시
+        if tag in self._PASS_TAGS:
+            return
 
         if tag in self._VOID_TAGS:
             if tag == "br":
@@ -158,6 +172,16 @@ class _HtmlToFlowables(HTMLParser):
     def handle_endtag(self, tag):
         tag = tag.lower()
 
+        # 스킵 태그 닫기
+        if tag in self._SKIP_CONTENT_TAGS:
+            if tag in self._tag_stack:
+                idx = len(self._tag_stack) - 1 - self._tag_stack[::-1].index(tag)
+                self._tag_stack.pop(idx)
+            return
+
+        if tag in self._PASS_TAGS:
+            return
+
         if tag in self._INLINE_CLOSE:
             self._buf += self._INLINE_CLOSE[tag]
             if tag in self._inline_stack:
@@ -180,8 +204,8 @@ class _HtmlToFlowables(HTMLParser):
             return
 
     def handle_data(self, data):
-        # <head>/<style>/<script> 내용은 무시
-        for skip in ("head", "style", "script"):
+        # head/style/script 내부 내용은 무시
+        for skip in self._SKIP_CONTENT_TAGS:
             if skip in self._tag_stack:
                 return
         self._buf += data
