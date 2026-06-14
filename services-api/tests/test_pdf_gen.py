@@ -1,6 +1,6 @@
 import unittest
 
-from reportlab.platypus import HRFlowable, Paragraph, XPreformatted
+from reportlab.platypus import HRFlowable, Paragraph, Table, XPreformatted
 
 from services.pdf_gen import _get_styles, _markdown_inline, _markdown_to_flowables
 
@@ -39,6 +39,23 @@ class MarkdownToFlowablesTest(unittest.TestCase):
 
         self.assertEqual(len(flowables), 1)
         self.assertIsInstance(flowables[0], Paragraph)
+
+    def test_bold_document_title_uses_heading_style(self):
+        flowables = _markdown_to_flowables("**Document title**\n\nBody", self.styles)
+
+        self.assertEqual(flowables[0].style.name, self.styles["h1"].name)
+        self.assertIsInstance(flowables[1], HRFlowable)
+
+    def test_markdown_table_is_rendered_as_table(self):
+        flowables = _markdown_to_flowables(
+            "| Item | Value | Change |\n"
+            "|---|---:|:---|\n"
+            "| Bitcoin | $64,266 | +0.21% |",
+            self.styles,
+        )
+
+        self.assertIsInstance(flowables[0], Table)
+        self.assertEqual(len(flowables[0]._cellvalues), 2)
 
 
 if __name__ == "__main__":

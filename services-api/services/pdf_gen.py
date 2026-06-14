@@ -11,7 +11,10 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, XPreformatted
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, HRFlowable, XPreformatted,
+    Table, TableStyle,
+)
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
@@ -100,10 +103,26 @@ def _get_styles():
                     borderPadding=6,
                     backColor=colors.HexColor("#f5f5f5"),
                 )
+                table_header = ParagraphStyle(
+                    "KTableHeader",
+                    parent=body,
+                    fontSize=9,
+                    leading=13,
+                    textColor=colors.white,
+                    alignment=1,
+                )
+                table_body = ParagraphStyle(
+                    "KTableBody",
+                    parent=body,
+                    fontSize=9,
+                    leading=13,
+                    spaceAfter=0,
+                )
 
                 return {
                     "h1": h1, "h2": h2, "h3": h3, "body": body,
                     "li": li, "meta": meta, "quote": quote, "code": code,
+                    "table_header": table_header, "table_body": table_body,
                 }
 
     except Exception:
@@ -112,9 +131,12 @@ def _get_styles():
     base = styles["Normal"]
     quote = ParagraphStyle("Quote", parent=base, leftIndent=12)
     code = ParagraphStyle("Code", parent=base, fontName="Courier", fontSize=9, leading=12)
+    table_header = ParagraphStyle("TableHeader", parent=base, fontSize=9, textColor=colors.white)
+    table_body = ParagraphStyle("TableBody", parent=base, fontSize=9)
     return {
         "h1": styles["h1"], "h2": styles["h2"], "h3": styles["h3"],
         "body": base, "li": base, "meta": base, "quote": quote, "code": code,
+        "table_header": table_header, "table_body": table_body,
     }
 
 
@@ -315,6 +337,43 @@ def _markdown_inline(text: str) -> str:
     return text
 
 
+def _split_table_row(line: str) -> list[str]:
+    """Markdown table 행을 셀 목록으로 분리."""
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _is_table_separator(line: str) -> bool:
+    cells = _split_table_row(line)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+
+
+def _markdown_table(rows: list[list[str]], styles: dict) -> Table:
+    column_count = max(len(row) for row in rows)
+    normalized = [row + [""] * (column_count - len(row)) for row in rows]
+    data = [
+        [
+            Paragraph(_markdown_inline(cell), styles["table_header" if row_index == 0 else "table_body"])
+            for cell in row
+        ]
+        for row_index, row in enumerate(normalized)
+    ]
+    table = Table(data, colWidths=[170 * mm / column_count] * column_count, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#334155")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f8fafc")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f9")]),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+    ]))
+    return table
+
+
 def _markdown_to_flowables(text: str, styles: dict) -> list:
     """Markdown 문서를 ReportLab flowable 목록으로 변환."""
     flowables = []
@@ -333,7 +392,12 @@ def _markdown_to_flowables(text: str, styles: dict) -> list:
             flowables.append(XPreformatted(html_module.escape("\n".join(code_lines)), styles["code"]))
             code_lines.clear()
 
-    for line in text.splitlines():
+    lines = text.splitlines()
+    index = 0
+    content_started = False
+
+    while index < len(lines):
+        line = lines[index]
         stripped = line.strip()
 
         if stripped.startswith("```") or stripped.startswith("~~~"):
@@ -341,14 +405,33 @@ def _markdown_to_flowables(text: str, styles: dict) -> list:
             if in_code_block:
                 flush_code()
             in_code_block = not in_code_block
+            index += 1
             continue
 
         if in_code_block:
             code_lines.append(line)
+            index += 1
             continue
 
         if not stripped:
             flush_paragraph()
+            index += 1
+            continue
+
+        if (
+            "|" in stripped
+            and index + 1 < len(lines)
+            and _is_table_separator(lines[index + 1].strip())
+        ):
+            flush_paragraph()
+            table_rows = [_split_table_row(stripped)]
+            index += 2
+            while index < len(lines) and "|" in lines[index] and lines[index].strip():
+                table_rows.append(_split_table_row(lines[index]))
+                index += 1
+            flowables.append(_markdown_table(table_rows, styles))
+            flowables.append(Spacer(1, 3 * mm))
+            content_started = True
             continue
 
         heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
@@ -363,6 +446,28 @@ def _markdown_to_flowables(text: str, styles: dict) -> list:
                     HRFlowable(width="100%", thickness=1,
                                color=colors.HexColor("#333333"), spaceAfter=6)
                 )
+            content_started = True
+            index += 1
+            continue
+
+        bold_title = re.fullmatch(r"\*\*(.+)\*\*|__(.+)__", stripped)
+        if bold_title and not content_started:
+            flush_paragraph()
+            title = bold_title.group(1) or bold_title.group(2)
+            flowables.append(Paragraph(_markdown_inline(title), styles["h1"]))
+            flowables.append(
+                HRFlowable(width="100%", thickness=1,
+                           color=colors.HexColor("#333333"), spaceAfter=6)
+            )
+            content_started = True
+            index += 1
+            continue
+
+        if re.match(r"^[^\w\s]\s*\S", stripped) and len(stripped) <= 40:
+            flush_paragraph()
+            flowables.append(Paragraph(_markdown_inline(stripped), styles["h2"]))
+            content_started = True
+            index += 1
             continue
 
         if re.match(r"^([-*_])(?:\s*\1){2,}\s*$", stripped):
@@ -371,6 +476,7 @@ def _markdown_to_flowables(text: str, styles: dict) -> list:
                 HRFlowable(width="100%", thickness=0.5,
                            color=colors.HexColor("#cccccc"), spaceAfter=4)
             )
+            index += 1
             continue
 
         unordered = re.match(r"^[-+*]\s+(.+)$", stripped)
@@ -382,15 +488,21 @@ def _markdown_to_flowables(text: str, styles: dict) -> list:
             flowables.append(
                 Paragraph(f"{bullet}&nbsp;&nbsp;{_markdown_inline(content)}", styles["li"])
             )
+            content_started = True
+            index += 1
             continue
 
         quote = re.match(r"^>\s?(.*)$", stripped)
         if quote:
             flush_paragraph()
             flowables.append(Paragraph(_markdown_inline(quote.group(1)), styles["quote"]))
+            content_started = True
+            index += 1
             continue
 
         paragraph_lines.append(stripped)
+        content_started = True
+        index += 1
 
     flush_paragraph()
     flush_code()
