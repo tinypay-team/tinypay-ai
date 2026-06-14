@@ -2,6 +2,7 @@ import os
 import uuid
 import html as html_module
 import json
+import re
 from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from typing import Any
@@ -10,7 +11,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, XPreformatted
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
@@ -81,15 +82,40 @@ def _get_styles():
                     textColor=colors.HexColor("#888888"),
                     spaceAfter=8,
                 )
+                quote = ParagraphStyle(
+                    "KQuote",
+                    parent=body,
+                    leftIndent=12,
+                    borderPadding=6,
+                    backColor=colors.HexColor("#f8f8f8"),
+                    textColor=colors.HexColor("#555555"),
+                )
+                code = ParagraphStyle(
+                    "KCode",
+                    parent=body,
+                    fontSize=9,
+                    leading=14,
+                    leftIndent=8,
+                    rightIndent=8,
+                    borderPadding=6,
+                    backColor=colors.HexColor("#f5f5f5"),
+                )
 
-                return {"h1": h1, "h2": h2, "h3": h3, "body": body, "li": li, "meta": meta}
+                return {
+                    "h1": h1, "h2": h2, "h3": h3, "body": body,
+                    "li": li, "meta": meta, "quote": quote, "code": code,
+                }
 
     except Exception:
         pass
 
     base = styles["Normal"]
-    return {"h1": styles["h1"], "h2": styles["h2"], "h3": styles["h3"],
-            "body": base, "li": base, "meta": base}
+    quote = ParagraphStyle("Quote", parent=base, leftIndent=12)
+    code = ParagraphStyle("Code", parent=base, fontName="Courier", fontSize=9, leading=12)
+    return {
+        "h1": styles["h1"], "h2": styles["h2"], "h3": styles["h3"],
+        "body": base, "li": base, "meta": base, "quote": quote, "code": code,
+    }
 
 
 # ─── HTML → ReportLab flowables 변환기 ───────────────────────────────────────
@@ -263,16 +289,111 @@ def _html_to_flowables(html_text: str, styles: dict) -> list:
     return parser.result()
 
 
-def _plain_to_flowables(text: str, styles: dict) -> list:
-    """기존 plain text → ReportLab flowable 변환 (마크다운 부분 정리 포함)."""
+def _markdown_inline(text: str) -> str:
+    """일반적인 Markdown 인라인 문법을 ReportLab Paragraph 마크업으로 변환."""
+    code_tokens: list[str] = []
+
+    def stash_code(match: re.Match) -> str:
+        code_tokens.append(
+            f'<font color="#555555">{html_module.escape(match.group(1))}</font>'
+        )
+        return f"\x00CODE{len(code_tokens) - 1}\x00"
+
+    text = re.sub(r"`([^`\n]+)`", stash_code, text)
+    text = html_module.escape(text)
+    text = re.sub(
+        r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+        lambda m: f'<link href="{m.group(2)}" color="#2563eb">{m.group(1)}</link>',
+        text,
+    )
+    text = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: f"<b>{m.group(1) or m.group(2)}</b>", text)
+    text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)",
+                  lambda m: f"<i>{m.group(1) or m.group(2)}</i>", text)
+
+    for index, code in enumerate(code_tokens):
+        text = text.replace(f"\x00CODE{index}\x00", code)
+    return text
+
+
+def _markdown_to_flowables(text: str, styles: dict) -> list:
+    """Markdown 문서를 ReportLab flowable 목록으로 변환."""
     flowables = []
-    for line in text.split("\n"):
+    paragraph_lines: list[str] = []
+    code_lines: list[str] = []
+    in_code_block = False
+
+    def flush_paragraph():
+        if paragraph_lines:
+            content = " ".join(line.strip() for line in paragraph_lines)
+            flowables.append(Paragraph(_markdown_inline(content), styles["body"]))
+            paragraph_lines.clear()
+
+    def flush_code():
+        if code_lines:
+            flowables.append(XPreformatted(html_module.escape("\n".join(code_lines)), styles["code"]))
+            code_lines.clear()
+
+    for line in text.splitlines():
         stripped = line.strip()
-        if not stripped:
-            flowables.append(Spacer(1, 3 * mm))
+
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            flush_paragraph()
+            if in_code_block:
+                flush_code()
+            in_code_block = not in_code_block
             continue
-        escaped = html_module.escape(stripped)
-        flowables.append(Paragraph(escaped, styles["body"]))
+
+        if in_code_block:
+            code_lines.append(line)
+            continue
+
+        if not stripped:
+            flush_paragraph()
+            continue
+
+        heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if heading:
+            flush_paragraph()
+            level = len(heading.group(1))
+            flowables.append(
+                Paragraph(_markdown_inline(heading.group(2)), styles[f"h{min(level, 3)}"])
+            )
+            if level == 1:
+                flowables.append(
+                    HRFlowable(width="100%", thickness=1,
+                               color=colors.HexColor("#333333"), spaceAfter=6)
+                )
+            continue
+
+        if re.match(r"^([-*_])(?:\s*\1){2,}\s*$", stripped):
+            flush_paragraph()
+            flowables.append(
+                HRFlowable(width="100%", thickness=0.5,
+                           color=colors.HexColor("#cccccc"), spaceAfter=4)
+            )
+            continue
+
+        unordered = re.match(r"^[-+*]\s+(.+)$", stripped)
+        ordered = re.match(r"^(\d+)[.)]\s+(.+)$", stripped)
+        if unordered or ordered:
+            flush_paragraph()
+            bullet = "·" if unordered else f"{ordered.group(1)}."
+            content = unordered.group(1) if unordered else ordered.group(2)
+            flowables.append(
+                Paragraph(f"{bullet}&nbsp;&nbsp;{_markdown_inline(content)}", styles["li"])
+            )
+            continue
+
+        quote = re.match(r"^>\s?(.*)$", stripped)
+        if quote:
+            flush_paragraph()
+            flowables.append(Paragraph(_markdown_inline(quote.group(1)), styles["quote"]))
+            continue
+
+        paragraph_lines.append(stripped)
+
+    flush_paragraph()
+    flush_code()
     return flowables
 
 
@@ -339,11 +460,11 @@ async def execute_pdf_generation(
 
     story: list = []
 
-    # HTML이면 파싱, 아니면 plain text 처리
+    # HTML이면 파싱, 아니면 Markdown(일반 텍스트 포함) 처리
     if _is_html(document_content):
         story.extend(_html_to_flowables(document_content, styles))
     else:
-        story.extend(_plain_to_flowables(document_content, styles))
+        story.extend(_markdown_to_flowables(document_content, styles))
 
     story.append(Spacer(1, 6 * mm))
     story.append(
